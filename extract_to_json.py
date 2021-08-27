@@ -32,13 +32,16 @@ computed_metrics
 
 借鉴了nasbench的example.py
 """
-from nasbench import api
+
 import numpy as np
 import json
 import os
 import operator
+from tqdm import tqdm
 
 def main(dataset_path, save_path):
+    from nasbench import api
+
     nasbench = api.NASBench(dataset_file=dataset_path)
     
     assert len(nasbench.fixed_statistics) == len(nasbench.computed_statistics) == 423624, "Wrong length of the original dataset"
@@ -70,6 +73,8 @@ def main(dataset_path, save_path):
 
     with open(save_path, 'w') as f:
         json.dump(dataset_json, f)
+    
+    print('extract finished')
 
 def compare_json_with_ctns(json_path, ctnas_json_path):
     
@@ -86,8 +91,8 @@ def compare_json_with_ctns(json_path, ctnas_json_path):
 
     extracted_json.sort(key = lambda elem0 : elem0["avg_validation_accuracy"])
     ctnas_json.sort(key = lambda elem1 : elem1["validation_accuracy"])
-
-    for i, compond in enumerate(zip(extracted_json, ctnas_json)):        
+    
+    for i, compond in enumerate(tqdm(zip(extracted_json, ctnas_json))):        
         x,y= compond
         assert operator.eq(x["module_adjacency"], y["matrix"])
         assert operator.eq(x["module_operations"], y["ops"])
@@ -97,12 +102,7 @@ def compare_json_with_ctns(json_path, ctnas_json_path):
         assert x["avg_validation_accuracy"] == y["validation_accuracy"]
         assert x["avg_test_accuracy"] == y["test_accuracy"]
         assert x["unique_hash"] == y["hash_"]
-        print(i,' ok')
-
-        
-        
-
-    
+    print('all ok')
 
 
 if __name__ == "__main__":
@@ -118,6 +118,8 @@ if __name__ == "__main__":
 
     if os.path.exists(JSON_SAVE_PATH) is False:
         main(dataset_path = NASBENCH_TFRECORD, save_path = JSON_SAVE_PATH)
-    else:
+    if os.path.exists(CTNAS_JSON_PATH) and os.path.exists(JSON_SAVE_PATH):
         compare_json_with_ctns(json_path =JSON_SAVE_PATH, ctnas_json_path=CTNAS_JSON_PATH)
+
+    
 
