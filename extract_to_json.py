@@ -74,10 +74,12 @@ def main(dataset_path, save_path):
     with open(save_path, 'w') as f:
         json.dump(dataset_json, f)
     
-    print('extract finished')
+    print('extract finished\n')
 
 def compare_json_with_ctns(json_path, ctnas_json_path):
     
+    print('start checking\n')
+
     with open(json_path, 'r') as f:
         extracted_json = json.load(f)
     
@@ -102,7 +104,8 @@ def compare_json_with_ctns(json_path, ctnas_json_path):
         assert x["avg_validation_accuracy"] == y["validation_accuracy"]
         assert x["avg_test_accuracy"] == y["test_accuracy"]
         assert x["unique_hash"] == y["hash_"]
-    print('all ok')
+    
+    print('check finished: all ok \n')
 
 
 if __name__ == "__main__":
