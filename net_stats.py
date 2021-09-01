@@ -11,6 +11,11 @@ from nasbench.lib import base_ops
 from nasbench.lib import training_time
 from nasbench import api
 import numpy as np
+import os
+
+from nasbench.lib import model_spec
+
+os.environ["CUDA_VISIBLE_DEVICES"]='2'
 
 INPUT = 'input'
 OUTPUT = 'output'
@@ -208,19 +213,21 @@ def compute_vertex_channels(input_channels, output_channels, matrix):
 
     return vertex_channels
 
+def stats_graph(graph):
+    flops = tf.profiler.profile(graph, options=tf.profiler.ProfileOptionBuilder.float_operation())
+    params = tf.profiler.profile(graph, options=tf.profiler.ProfileOptionBuilder.trainable_variables_parameter())
+    print('FLOPs: {};    Trainable params: {}'.format(flops.total_float_ops, params.total_parameters))
 
 if __name__ == '__main__':
-    spec = api.ModelSpec(
+    spec = model_spec.ModelSpec(
         # Adjacency matrix of the module
-        matrix=[
-            [0, 1, 1, 1, 0, 1, 0],  # input layer
+        matrix=[[0, 1, 1, 1, 0, 1, 0],  # input layer
             [0, 0, 0, 0, 0, 0, 1],  # 1x1 conv
             [0, 0, 0, 0, 0, 0, 1],  # 3x3 conv
             [0, 0, 0, 0, 1, 0, 0],  # 5x5 conv (replaced by two 3x3's)
             [0, 0, 0, 0, 0, 0, 1],  # 5x5 conv (replaced by two 3x3's)
             [0, 0, 0, 0, 0, 0, 1],  # 3x3 max-pool
-            [0, 0, 0, 0, 0, 0, 0]
-        ],  # output layer
+            [0, 0, 0, 0, 0, 0, 0]],  # output layer
         # Operations at the vertices of the module, matches order of matrix
         ops=[INPUT, CONV1X1, CONV3X3, CONV3X3, CONV3X3, MAXPOOL3X3, OUTPUT])
 
@@ -241,7 +248,7 @@ if __name__ == '__main__':
     else:
         raise ValueError('invalid data_format')
 
-    assert spec.data_format == config['data_format'],'Wrong ModelSpec data_formar'
+    assert spec.data_format == config['data_format'],'Wrong ModelSpec data_format'
 
     new_graph = tf.Graph()
     with new_graph.as_default():
@@ -298,10 +305,8 @@ if __name__ == '__main__':
         # Fully-connected layer to labels
         logits = tf.layers.dense(inputs=net, units=config['num_labels'])
 
-    # with tf.Session(graph=tf.get_default_graph()) as sess:
-    #     print(sess.run(logits))
-
+    print(stats_graph(new_graph))
     with tf.Session(graph=new_graph) as sess:
-        sess.run(tf.global_variables_initializer())
+        # sess.run(tf.global_variables_initializer())
         x =np.random.rand(1,32 * 32 * 3)
         print(sess.run(logits, feed_dict={features: x}))
