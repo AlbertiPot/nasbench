@@ -23,7 +23,7 @@ from nasbench import api
 
 # Replace this string with the path to the downloaded nasbench.tfrecord before
 # executing.
-NASBENCH_TFRECORD = '/home/gbc/workspace/nasbench/data/nasbench_only108.tfrecord'
+NASBENCH_TFRECORD = '/home/ubuntu/data/nasbench101/nasbench_only108.tfrecord'
 
 INPUT = 'input'
 OUTPUT = 'output'

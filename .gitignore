@@ -5,3 +5,4 @@ nasbench.egg-info/
 # *.tfrecord
 # *.json
 data
+tmp_output/

@@ -1,21 +1,28 @@
 """
 Data:2021/08/26
 Target: 
-计算数据集中全部子网的FLOPs和parameters，并用parameters与官方数据库进行校验
+根据数据集众的matrix和ops，建立模型并计算模型的可训练的参数量和flops
+注意FLOPs不应该包括对初始化的计算量，这里做了去除
+将计算得到的参数量与官方的数据库作对比，以保证自己的计算正确
 
+
+模型的创建参考了nasbench api
+网络参数量的计算参考了https://www.cnblogs.com/o-v-o/p/11042066.html
 """
+import os
+import json
 
+import operator
+import numpy as np
 import tensorflow as tf
 
 from nasbench.lib import base_ops
-from nasbench.lib import training_time
-from nasbench import api
-import numpy as np
-import os
+
 
 from nasbench.lib import model_spec
+# from tensorflow.python.framework import graph_util
 
-os.environ["CUDA_VISIBLE_DEVICES"]='2'
+# os.environ["CUDA_VISIBLE_DEVICES"]='2'
 
 INPUT = 'input'
 OUTPUT = 'output'
@@ -214,32 +221,21 @@ def compute_vertex_channels(input_channels, output_channels, matrix):
     return vertex_channels
 
 def stats_graph(graph):
-    flops = tf.profiler.profile(graph, options=tf.profiler.ProfileOptionBuilder.float_operation())
-    params = tf.profiler.profile(graph, options=tf.profiler.ProfileOptionBuilder.trainable_variables_parameter())
-    print('FLOPs: {};    Trainable params: {}'.format(flops.total_float_ops, params.total_parameters))
+    flops = tf.compat.v1.profiler.profile(graph, options=tf.compat.v1.profiler.ProfileOptionBuilder.float_operation())
+    params = tf.compat.v1.profiler.profile(graph, options=tf.compat.v1.profiler.ProfileOptionBuilder.trainable_variables_parameter())
+    return flops.total_float_ops, params.total_parameters
+    # print('FLOPs: {};    Trainable params: {}'.format(flops.total_float_ops, params.total_parameters))
 
-if __name__ == '__main__':
-    spec = model_spec.ModelSpec(
-        # Adjacency matrix of the module
-        matrix=[[0, 1, 1, 1, 0, 1, 0],  # input layer
-            [0, 0, 0, 0, 0, 0, 1],  # 1x1 conv
-            [0, 0, 0, 0, 0, 0, 1],  # 3x3 conv
-            [0, 0, 0, 0, 1, 0, 0],  # 5x5 conv (replaced by two 3x3's)
-            [0, 0, 0, 0, 0, 0, 1],  # 5x5 conv (replaced by two 3x3's)
-            [0, 0, 0, 0, 0, 0, 1],  # 3x3 max-pool
-            [0, 0, 0, 0, 0, 0, 0]],  # output layer
-        # Operations at the vertices of the module, matches order of matrix
-        ops=[INPUT, CONV1X1, CONV3X3, CONV3X3, CONV3X3, MAXPOOL3X3, OUTPUT])
+def load_pb(pb):
+    with tf.gfile.GFile(pb, "rb") as f:
+        graph_def = tf.GraphDef()
+        graph_def.ParseFromString(f.read())
+    with tf.Graph().as_default() as graph:
+        tf.import_graph_def(graph_def, name='')
+        return graph
 
-    config = {}
-    # num_train_images = {}
+def build_model(spec, config, img_size=32, img_channel=3, is_training = False):
 
-    config['stem_filter_size'] = 128
-    config['data_format'] = 'channels_last'
-    config['num_stacks'] = 3
-    config['num_modules_per_stack'] = 3
-    config['num_labels'] = 10
-    
     if config['data_format'] == 'channels_last':  # NHWC
         channel_axis = 3
     elif config['data_format'] == 'channels_first':
@@ -252,23 +248,14 @@ if __name__ == '__main__':
 
     new_graph = tf.Graph()
     with new_graph.as_default():
-        # Store auxiliary activations increasing in depth of network. First
-        # activation occurs immediately after the stem and the others immediately
-        # follow each stack.
-        aux_activations = []
-
-        is_training = False
-
-        
-        features = tf.placeholder(tf.float32, [1, 32 * 32 * 3], name='features') # 32*32*3
-        f_reshape = tf.reshape(features, [1, 32, 32, 3])  # NHWC
+        features = tf.compat.v1.placeholder(tf.float32, [1, img_size * img_size * img_channel], name='features') # 32*32*3
+        f_reshape = tf.reshape(features, [1, img_size, img_size, img_channel])  # NHWC
 
         # Initial stem convolution
-        with tf.variable_scope('stem'):
+        with tf.compat.v1.variable_scope('stem'):
             net = base_ops.conv_bn_relu(f_reshape, 3,
                                         config['stem_filter_size'],
                                         is_training, config['data_format'])
-            aux_activations.append(net)
 
         for stack_num in range(config['num_stacks']):
             channels = net.get_shape()[channel_axis].value
@@ -285,14 +272,13 @@ if __name__ == '__main__':
                 # Double output channels each time we downsample
                 channels *= 2
 
-            with tf.variable_scope('stack{}'.format(stack_num)):
+            with tf.compat.v1.variable_scope('stack{}'.format(stack_num)):
                 for module_num in range(config['num_modules_per_stack']):
-                    with tf.variable_scope('module{}'.format(module_num)):
+                    with tf.compat.v1.variable_scope('module{}'.format(module_num)):
                         net = build_module(spec,
                                            inputs=net,
                                            channels=channels,
                                            is_training=is_training)
-                aux_activations.append(net)
 
         # Global average pool
         if config['data_format'] == 'channels_last':
@@ -305,8 +291,91 @@ if __name__ == '__main__':
         # Fully-connected layer to labels
         logits = tf.layers.dense(inputs=net, units=config['num_labels'])
 
-    print(stats_graph(new_graph))
-    with tf.Session(graph=new_graph) as sess:
-        # sess.run(tf.global_variables_initializer())
-        x =np.random.rand(1,32 * 32 * 3)
-        print(sess.run(logits, feed_dict={features: x}))
+    return new_graph
+
+
+if __name__ == '__main__':
+
+    config = {}
+    config['stem_filter_size'] = 128
+    config['data_format'] = 'channels_last'
+    config['num_stacks'] = 3
+    config['num_modules_per_stack'] = 3
+    config['num_labels'] = 10
+
+    save_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_flops.json'
+    data_path = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_1.json'
+    with open(data_path, 'r') as f:
+        dataset = json.load(f)
+    f.close()
+    assert len(dataset) == 423624,"the length of the extracted json dataset is not 423624"
+    
+    from nasbench import api
+    origin_dataset_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.tfrecord'
+    nasbench = api.NASBench(dataset_file=origin_dataset_file)
+    assert len(nasbench.fixed_statistics) == len(nasbench.computed_statistics) == 423624, "Wrong length of the original dataset"
+
+    for i, subnet in enumerate(dataset):
+        matrix=[]
+        ops = []
+
+        matrix = subnet['module_adjacency']
+        ops = subnet['module_operations']
+        n_params = subnet['trainable_parameters']
+        unique_hash = subnet['unique_hash']
+        
+        fixed_metrics, _ = nasbench.get_metrics_from_hash(unique_hash)
+        assert ((np.array(matrix,dtype=fixed_metrics['module_adjacency'].dtype) if not isinstance(matrix, np.ndarray) else matrix) == fixed_metrics['module_adjacency']).all(), 'Wrong Adjacency'
+        assert operator.eq(ops, fixed_metrics['module_operations']),'Wrong ops'
+        
+        spec = model_spec.ModelSpec(matrix, ops)
+        new_graph = build_model(spec, config, img_size=32, img_channel=3, is_training=False)
+    
+        # print('stats before freezing')
+        _, params = stats_graph(new_graph)
+    
+        with tf.Session(graph=new_graph) as sess:
+            sess.run(tf.compat.v1.global_variables_initializer())
+        
+            # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
+            output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
+
+            file_name = 'tmp_output/graph.pb'
+            if os.path.exists(file_name):
+                os.remove(file_name)
+            
+            with tf.gfile.GFile(file_name, "wb") as f:
+                f.write(output_graph.SerializeToString())
+            
+            # test the ConvNet is run
+            # x = np.random.rand(1,32 * 32 * 3)
+            # print(sess.run(logits, feed_dict={features: x}))  
+            
+            # Another way to calculate the params
+            # params = np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
+            # print(params)        
+        
+        graph = load_pb(file_name)
+        # print('stats after freezing')
+        flops, _ = stats_graph(graph)
+    
+        assert fixed_metrics['trainable_parameters'] == params == n_params, 'Wrong calculated parames'
+        subnet['flops'] = flops
+        
+        with open(save_file, 'w') as r:
+            json.dump(subnet, r)
+        r.close()
+        
+        del new_graph, graph
+    
+    with open(save_file, 'r') as w:
+        flops_dataset = json.load(w)
+    w.close()
+    assert len(flops_dataset) == 423624
+    print('all ok!!!!!!!!!!!!!')
+
+
+    
+    
+
+        
