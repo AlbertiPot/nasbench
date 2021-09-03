@@ -343,8 +343,8 @@ if __name__ == '__main__':
             if os.path.exists(file_name):
                 os.remove(file_name)
             
-            with tf.gfile.GFile(file_name, "wb") as f:
-                f.write(output_graph.SerializeToString())
+            with tf.gfile.GFile(file_name, "wb") as q:
+                q.write(output_graph.SerializeToString())
             
             # test the ConvNet is run
             # x = np.random.rand(1,32 * 32 * 3)
