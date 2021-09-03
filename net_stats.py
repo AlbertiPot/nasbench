@@ -118,7 +118,6 @@ def build_module(spec, inputs, channels, is_training):
     outputs = tf.identity(outputs, name='output')
     return outputs
 
-
 def projection(inputs, channels, is_training, data_format):
     """1x1 projection (as in ResNet) followed by batch normalization and ReLU."""
     with tf.variable_scope('projection'):
@@ -126,7 +125,6 @@ def projection(inputs, channels, is_training, data_format):
                                     data_format)
 
     return net
-
 
 def truncate(inputs, channels, data_format):
     """Slice the inputs to channels if necessary."""
@@ -149,7 +147,6 @@ def truncate(inputs, channels, data_format):
             return tf.slice(inputs, [0, 0, 0, 0], [-1, -1, -1, channels])
         else:
             return tf.slice(inputs, [0, 0, 0, 0], [-1, channels, -1, -1])
-
 
 def compute_vertex_channels(input_channels, output_channels, matrix):
     """Computes the number of channels at every vertex.
@@ -293,7 +290,6 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False):
 
     return new_graph
 
-
 if __name__ == '__main__':
 
     config = {}
@@ -304,7 +300,10 @@ if __name__ == '__main__':
     config['num_labels'] = 10
 
     save_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_flops.json'
-    data_path = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_1.json'
+    if os.path.exists(save_file):
+        os.remove(save_file)
+    
+    data_path = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.json'
     with open(data_path, 'r') as f:
         dataset = json.load(f)
     f.close()
@@ -359,19 +358,18 @@ if __name__ == '__main__':
         # print('stats after freezing')
         flops, _ = stats_graph(graph)
     
-        assert fixed_metrics['trainable_parameters'] == params == n_params, 'Wrong calculated parames'
-        subnet['flops'] = flops
+        assert fixed_metrics['trainable_parameters'] == params == dataset[i]['trainable_parameters'] == n_params, 'Wrong calculated parames'
+        dataset[i]['flops'] = flops
+        assert len(dataset[i]) == 9
         
-        with open(save_file, 'w') as r:
-            json.dump(subnet, r)
-        r.close()
-        
-        del new_graph, graph
+        del new_graph, graph, output_graph
     
-    with open(save_file, 'r') as w:
-        flops_dataset = json.load(w)
-    w.close()
-    assert len(flops_dataset) == 423624
+    assert len(dataset) == 423624
+    with open(save_file, 'w') as r:
+            json.dump(dataset, r)
+    r.close()
+    
+    
     print('all ok!!!!!!!!!!!!!')
 
 
