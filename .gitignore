@@ -2,7 +2,8 @@ venv/
 nasbench.egg-info/
 *.pyc
 
-# *.tfrecord
-# *.json
+*.tfrecord
+*.json
 data
 tmp_output/
+*.log
