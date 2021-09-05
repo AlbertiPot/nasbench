@@ -466,7 +466,7 @@ if __name__ == '__main__':
 
     # test(config)
 
-    save_file = '/home/ubuntu/workspace/nasbench/tmp_data/423flops.json'
+    save_file = '/home/ubuntu/workspace/nasbench/tmp_ouput/423flops.json'
     if os.path.exists(save_file):
         os.remove(save_file)
     
