@@ -8,7 +8,7 @@ Target:
 """
 import os
 import json
-
+import time
 import operator
 import numpy as np
 import tensorflow as tf
@@ -317,7 +317,7 @@ def vertex_params(num_vertices, config):
     # print(cell_params_dict)
     return cell_params_dict
 
-def compute_params_flops(dataset, nasbench, config, pb_file_path):
+def compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_length):
     
     for i, subnet in enumerate(dataset):
             matrix=[]
@@ -371,12 +371,12 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path):
         
             assert fixed_metrics['trainable_parameters'] == params == dataset[i]['trainable_parameters'] == n_params, 'Wrong calculated parames'
             dataset[i]['flops'] = flops
-            assert len(dataset[i]) == 10
+            assert len(dataset[i]) == arch_data_length
             
             del new_graph, graph, output_graph
 
             # break
-    assert len(dataset) == 423624
+
     return dataset 
 
 def test(config):
@@ -455,6 +455,7 @@ def test(config):
     # print(params, flops)
 
 if __name__ == '__main__':
+    s1 = time.time()
 
     config = {}
     config['stem_filter_size'] = 128
@@ -481,8 +482,8 @@ if __name__ == '__main__':
     assert len(nasbench.fixed_statistics) == len(nasbench.computed_statistics) == 423624, "Wrong length of the original dataset"
 
     pb_file_path = 'tmp_output/graph_test.pb'                       # 冻结时的图暂存
-    
-    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path)
+    arch_data_length = 10
+    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_length)
 
     # assert len(dataset) == 423624
     assert len(dataset) == 423
@@ -490,7 +491,8 @@ if __name__ == '__main__':
             json.dump(dataset, r)
     r.close()
     
-    print('all ok!!!!!!!!!!!!!')
+    s2 = time.time()
+    print('all ok!!!!!!!!!!!!! using {} seconds'.format(s2-s1))
 
 
     
