@@ -289,8 +289,7 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False):
 
     return new_graph
 
-def vertex_params(spec, config):
-    num_vertices = np.shape(spec.matrix)[0]
+def vertex_params(num_vertices, config):
     cell_params_dict = {}
     for stack_num in range(config['num_stacks']):
             for module_num in range(config['num_modules_per_stack']):
@@ -302,7 +301,7 @@ def vertex_params(spec, config):
                     vertex_name ='stack{}/module{}/vertex_{}'.format(stack_num, module_num, t)
                     
                     if tf.compat.v1.trainable_variables(scope = vertex_name) == []:                     # 判断某节点下是否有可训练的参数，如无（返回空列表），continue继续遍历下一个vertex
-                        # print('{}_params : {}'.format(vertex_name,vertex_params))
+                        print('{}_params : {}'.format(vertex_name,vertex_params))
                         continue
                     
                     for trainable_variable in tf.compat.v1.trainable_variables(scope = vertex_name):
@@ -311,11 +310,11 @@ def vertex_params(spec, config):
                             ops_params *= dim.value
                         vertex_params += ops_params
                     cell_params[t] = vertex_params
-                    # print('{}_params : {}'.format(vertex_name,vertex_params))     
+                    print('{}_params : {}'.format(vertex_name,vertex_params))
                 
                 cell_params_dict['stack{}/module{}'.format(stack_num, module_num)] =  cell_params
         
-    # print(cell_params_dict)
+    print(cell_params_dict)
     return cell_params_dict
 
 def compute_params_flops(dataset, nasbench, config, pb_file_path):
@@ -341,10 +340,11 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path):
         
             with tf.Session(graph=new_graph) as sess:
                 sess.run(tf.compat.v1.global_variables_initializer())
- 
-                vertex_params_dict = vertex_params(spec, config)
+                
+                num_vertices = np.shape(spec.matrix)[0]
+                vertex_params_dict = vertex_params(num_vertices, config)
                 assert len(vertex_params_dict) == config['num_stacks']*config['num_modules_per_stack'] , 'Wrong cell counts'
-                assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == np.shape(spec.matrix)[0] == len(vertex_params_dict[list(vertex_params_dict.keys())[-1]]), 'Wrong cell opts length'
+                assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == num_vertices == len(vertex_params_dict[list(vertex_params_dict.keys())[-1]]), 'Wrong cell opts length'
                 dataset[i]['vertex_params'] = vertex_params_dict
 
                 # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
