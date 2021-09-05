@@ -301,7 +301,7 @@ def vertex_params(num_vertices, config):
                     vertex_name ='stack{}/module{}/vertex_{}'.format(stack_num, module_num, t)
                     
                     if tf.compat.v1.trainable_variables(scope = vertex_name) == []:                     # 判断某节点下是否有可训练的参数，如无（返回空列表），continue继续遍历下一个vertex
-                        print('{}_params : {}'.format(vertex_name,vertex_params))
+                        # print('{}_params : {}'.format(vertex_name,vertex_params))
                         continue
                     
                     for trainable_variable in tf.compat.v1.trainable_variables(scope = vertex_name):
@@ -310,11 +310,11 @@ def vertex_params(num_vertices, config):
                             ops_params *= dim.value
                         vertex_params += ops_params
                     cell_params[t] = vertex_params
-                    print('{}_params : {}'.format(vertex_name,vertex_params))
+                    # print('{}_params : {}'.format(vertex_name,vertex_params))
                 
                 cell_params_dict['stack{}/module{}'.format(stack_num, module_num)] =  cell_params
         
-    print(cell_params_dict)
+    # print(cell_params_dict)
     return cell_params_dict
 
 def compute_params_flops(dataset, nasbench, config, pb_file_path):
