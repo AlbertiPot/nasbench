@@ -1,10 +1,7 @@
 """
-Data:2021/08/26
+Data:2021/09/01
 Target: 
-根据数据集众的matrix和ops，建立模型并计算模型的可训练的参数量和flops
-注意FLOPs不应该包括对初始化的计算量，这里做了去除
-将计算得到的参数量与官方的数据库作对比，以保证自己的计算正确
-
+在得到模型总可训参数量和FLOPS的基础上，进一步获得模型每个节点的可训练参数量和FLOPS
 
 模型的创建参考了nasbench api
 网络参数量的计算参考了https://www.cnblogs.com/o-v-o/p/11042066.html
@@ -375,25 +372,34 @@ def test(config):
     
     with tf.Session(graph=new_graph) as sess:
         # sess.run(tf.compat.v1.global_variables_initializer())
+        cell_params_dict = {}
+        
         for stack_num in range(config['num_stacks']):
             for module_num in range(config['num_modules_per_stack']):
+                
+                cell_params = [0]*num_vertices
+                
                 for t in range(1, num_vertices - 1):
-                    if spec.ops[t] == 'maxpool3x3':
-                        continue
-                    # vertex_name_1 = tf.get_default_graph().get_name_scope()    # 这一个会产生不同的scope名字
-                    vertex_name ='stack{}/module{}/vertex_{}'.format(stack_num, module_num, t)
-                    # opt = new_graph.get_operation_by_name(vertex_name+'/Conv3x3-BN-ReLU/conv2d/kernel')
-                    # print(opt.outputs)  
                     vertex_params = 0
+                    vertex_name ='stack{}/module{}/vertex_{}'.format(stack_num, module_num, t)
+                    
+                    if spec.ops[t] == 'maxpool3x3':
+                        # print('{}_params : {}'.format(vertex_name,vertex_params))
+                        continue
+                    
                     for trainable_variable in tf.compat.v1.trainable_variables(scope = vertex_name):
                         ops_params = 1
                         for dim in trainable_variable.shape:
-                            ops_params *= dim
+                            ops_params *= dim.value
                         vertex_params += ops_params
-                    print('{}_params : {}'.format(vertex_name,vertex_params))
-            #         break                      
-            #     break
-            # break     
+                    cell_params[t] = vertex_params
+                    # print('{}_params : {}'.format(vertex_name,vertex_params))                
+                
+                cell_params_dict['stack{}/module{}'.format(stack_num, module_num)] =  cell_params
+        
+        print(cell_params_dict)
+    
+    
     
     # with tf.Session(graph=new_graph) as sess:
     #     sess.run(tf.compat.v1.global_variables_initializer())
