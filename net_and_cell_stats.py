@@ -302,7 +302,7 @@ def vertex_params(spec, config):
                     vertex_name ='stack{}/module{}/vertex_{}'.format(stack_num, module_num, t)
                     
                     if tf.compat.v1.trainable_variables(scope = vertex_name) == []:                     # 判断某节点下是否有可训练的参数，如无（返回空列表），continue继续遍历下一个vertex
-                        print('{}_params : {}'.format(vertex_name,vertex_params))
+                        # print('{}_params : {}'.format(vertex_name,vertex_params))
                         continue
                     
                     for trainable_variable in tf.compat.v1.trainable_variables(scope = vertex_name):
@@ -311,14 +311,14 @@ def vertex_params(spec, config):
                             ops_params *= dim.value
                         vertex_params += ops_params
                     cell_params[t] = vertex_params
-                    print('{}_params : {}'.format(vertex_name,vertex_params))            
+                    # print('{}_params : {}'.format(vertex_name,vertex_params))     
                 
                 cell_params_dict['stack{}/module{}'.format(stack_num, module_num)] =  cell_params
         
-    print(cell_params_dict)
+    # print(cell_params_dict)
     return cell_params_dict
 
-def compute_params_flops(dataset, nasbench, config):
+def compute_params_flops(dataset, nasbench, config, pb_file_path):
     
     for i, subnet in enumerate(dataset):
             matrix=[]
@@ -347,11 +347,10 @@ def compute_params_flops(dataset, nasbench, config):
                 assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == np.shape(spec.matrix)[0] == len(vertex_params_dict[list(vertex_params_dict.keys())[-1]]), 'Wrong cell opts length'
                 dataset[i]['vertex_params'] = vertex_params_dict
 
-
                 # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
                 output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
 
-                file_name = 'tmp_output/graph.pb'
+                file_name = pb_file_path
                 if os.path.exists(file_name):
                     os.remove(file_name)
                 
@@ -481,7 +480,9 @@ if __name__ == '__main__':
     nasbench = api.NASBench(dataset_file=origin_dataset_file)
     assert len(nasbench.fixed_statistics) == len(nasbench.computed_statistics) == 423624, "Wrong length of the original dataset"
 
-    dataset = compute_params_flops(dataset, nasbench, config)
+    pb_file_path = 'tmp_output/graph_test.pb'                       # 冻结时的图暂存
+    
+    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path)
 
     # assert len(dataset) == 423624
     assert len(dataset) == 423
