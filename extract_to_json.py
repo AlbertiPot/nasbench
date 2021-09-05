@@ -30,6 +30,8 @@ computed_metrics
 
 仅仅保留 邻接矩阵，算子，参数数量，3次平均的train_acc, val_acc, test_acc
 
+2021/09/05更新：可以提取前423个结构作为小测试集进行代码的测试
+
 借鉴了nasbench的example.py
 """
 
@@ -68,8 +70,13 @@ def main(dataset_path, save_path):
         arch["unique_hash"] = unique_hash
         
         dataset_json.append(arch)
+
+        # 提取423个数据构建小测试集时用这个
+        if len(dataset_json) == 423:    
+            break
     
-    assert len(dataset_json) == 423624, "Wrong length of the extracted json dataset"
+    assert len(dataset_json) == 423, "Wrong length of the extracted json dataset"
+    # assert len(dataset_json) == 423624, "Wrong length of the extracted json dataset"
 
     with open(save_path, 'w') as f:
         json.dump(dataset_json, f)
@@ -110,9 +117,11 @@ def compare_json_with_ctns(json_path, ctnas_json_path):
 
 if __name__ == "__main__":
     
-    NASBENCH_TFRECORD = '/home/gbc/workspace/nasbench/data/nasbench_only108.tfrecord'
-    JSON_SAVE_PATH = '/home/gbc/workspace/nasbench/data/nasbench_only108.json'
+    NASBENCH_TFRECORD = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.tfrecord'
+    JSON_SAVE_PATH = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_423.json'
+    
     CTNAS_JSON_PATH = '/home/gbc/workspace/CTNAS/ctnas/data/nas_bench.json'
+    
     INPUT = 'input'
     OUTPUT = 'output'
     CONV1X1 = 'conv1x1-bn-relu'
@@ -121,8 +130,10 @@ if __name__ == "__main__":
 
     if os.path.exists(JSON_SAVE_PATH) is False:
         main(dataset_path = NASBENCH_TFRECORD, save_path = JSON_SAVE_PATH)
-    if os.path.exists(CTNAS_JSON_PATH) and os.path.exists(JSON_SAVE_PATH):
-        compare_json_with_ctns(json_path =JSON_SAVE_PATH, ctnas_json_path=CTNAS_JSON_PATH)
+    
+    # 当提取423个结构时，不用检查
+    # if os.path.exists(CTNAS_JSON_PATH) and os.path.exists(JSON_SAVE_PATH):
+    #     compare_json_with_ctns(json_path =JSON_SAVE_PATH, ctnas_json_path=CTNAS_JSON_PATH)
 
     
 
