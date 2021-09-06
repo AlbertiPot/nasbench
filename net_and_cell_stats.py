@@ -251,7 +251,6 @@ def calculate_vertex_flops(spec, inputs, channels, is_training, stack_num, modul
 
     # 这里开始构建每个节点算子和连接方式
     for t in range(1, num_vertices - 1):
-        
         vertex_graph = tf.Graph()       # 构建每个vertex的子图
         with vertex_graph.as_default():
             with tf.compat.v1.variable_scope('vertex_{}'.format(t)):
@@ -353,15 +352,17 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False, v
 
             with tf.compat.v1.variable_scope('stack{}'.format(stack_num)):
                 for module_num in range(config['num_modules_per_stack']):
-                    with tf.compat.v1.variable_scope('module{}'.format(module_num)):
+                    with tf.compat.v1.variable_scope('module{}'.format(module_num)):                        
+                        tmp_net = net # 噩梦的开始, 原来没这一行，导致build_module输出的net输入到计算节点的函数中，实际上算了本cell后一个cell的flops
                         net = build_module(spec,
                                            inputs=net,
                                            channels=channels,
                                            is_training=is_training)
                         
                         # 计算t个cell中每个节点的flops
-                        vertex_flops_list = calculate_vertex_flops(spec, inputs=net,channels =channels,is_training=is_training, stack_num=stack_num, module_num=module_num,vertex_flops_file_path=vertex_flops_file_path)
+                        vertex_flops_list = calculate_vertex_flops(spec, inputs=tmp_net,channels =channels,is_training=is_training, stack_num=stack_num, module_num=module_num,vertex_flops_file_path=vertex_flops_file_path)
                         vertex_flops_dict['stack{}/module{}'.format(stack_num, module_num)] = vertex_flops_list
+                        del tmp_net
 
         # Global average pool
         if config['data_format'] == 'channels_last':
@@ -405,69 +406,72 @@ def vertex_params(num_vertices, config):
     # print(cell_params_dict)
     return cell_params_dict
 
-def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path,arch_data_length):
+def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length):
     
     for i, subnet in enumerate(dataset):
-            matrix=[]
-            ops = []
+        matrix=[]
+        ops = []
 
-            matrix = subnet['module_adjacency']
-            ops = subnet['module_operations']
-            n_params = subnet['trainable_parameters']
-            unique_hash = subnet['unique_hash']
-            
-            fixed_metrics, _ = nasbench.get_metrics_from_hash(unique_hash)
-            assert ((np.array(matrix,dtype=fixed_metrics['module_adjacency'].dtype) if not isinstance(matrix, np.ndarray) else matrix) == fixed_metrics['module_adjacency']).all(), 'Wrong Adjacency'
-            assert operator.eq(ops, fixed_metrics['module_operations']),'Wrong ops'
-            
-            spec = model_spec.ModelSpec(matrix, ops)
-            
-            new_graph, vertex_flops_dict= build_model(spec, config, img_size=32, img_channel=3, is_training=False, vertex_flops_file_path=vertex_flops_file_path)
-            
-            dataset[i]['vertex_flops'] = vertex_flops_dict
-
-            # print('stats before freezing')
-            params = stats_graph(new_graph, cmd = 'scope', is_flops=False)
+        matrix = subnet['module_adjacency']
+        ops = subnet['module_operations']
+        n_params = subnet['trainable_parameters']
+        unique_hash = subnet['unique_hash']
         
-            with tf.Session(graph=new_graph) as sess:
-                sess.run(tf.compat.v1.global_variables_initializer())
-                
-                num_vertices = np.shape(spec.matrix)[0]
-                vertex_params_dict = vertex_params(num_vertices, config)
-                assert len(vertex_params_dict) == config['num_stacks']*config['num_modules_per_stack'] , 'Wrong cell counts'
-                assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == num_vertices == len(vertex_params_dict[list(vertex_params_dict.keys())[-2]]), 'Wrong cell opts length'
-                dataset[i]['vertex_params'] = vertex_params_dict
-
-                # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
-                output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
-
-                file_name = pb_file_path
-                if os.path.exists(file_name):
-                    os.remove(file_name)
-                
-                with tf.gfile.GFile(file_name, "wb") as q:
-                    q.write(output_graph.SerializeToString())
-                
-                # test the ConvNet is run
-                # x = np.random.rand(1,32 * 32 * 3)
-                # print(sess.run(logits, feed_dict={features: x}))  
-                
-                # Another way to calculate the params
-                # params = np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
-                # print(params)        
-            
-            graph = load_pb(file_name)
-            # print('stats after freezing')
-            flops= stats_graph(graph,cmd='scope',is_flops=True)
+        fixed_metrics, _ = nasbench.get_metrics_from_hash(unique_hash)
+        assert ((np.array(matrix,dtype=fixed_metrics['module_adjacency'].dtype) if not isinstance(matrix, np.ndarray) else matrix) == fixed_metrics['module_adjacency']).all(), 'Wrong Adjacency'
+        assert operator.eq(ops, fixed_metrics['module_operations']),'Wrong ops'
         
-            assert fixed_metrics['trainable_parameters'] == params == dataset[i]['trainable_parameters'] == n_params, 'Wrong calculated parames'
-            dataset[i]['flops'] = flops
-            assert len(dataset[i]) == arch_data_length
+        spec = model_spec.ModelSpec(matrix, ops)
+        
+        new_graph, vertex_flops_dict= build_model(spec, config, img_size=32, img_channel=3, is_training=False, vertex_flops_file_path=vertex_flops_file_path)
+        
+        dataset[i]['vertex_flops'] = vertex_flops_dict
+
+        # print('stats before freezing')
+        params = stats_graph(new_graph, cmd = 'scope', is_flops=False)
+    
+        with tf.Session(graph=new_graph,config=tf.ConfigProto(intra_op_parallelism_threads=15, inter_op_parallelism_threads=15)) as sess:
+            sess.run(tf.compat.v1.global_variables_initializer())
             
-            del new_graph, graph, output_graph
+            num_vertices = np.shape(spec.matrix)[0]
+            vertex_params_dict = vertex_params(num_vertices, config)
+            assert len(vertex_params_dict) == config['num_stacks']*config['num_modules_per_stack'] , 'Wrong cell counts'
+            assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == num_vertices == len(vertex_params_dict[list(vertex_params_dict.keys())[-2]]), 'Wrong cell opts length'
+            dataset[i]['vertex_params'] = vertex_params_dict
 
-            # break
+            # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
+            output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
 
+            file_name = pb_file_path
+            if os.path.exists(file_name):
+                os.remove(file_name)
+            
+            with tf.gfile.GFile(file_name, "wb") as q:
+                q.write(output_graph.SerializeToString())
+            
+            # test the ConvNet is run
+            # x = np.random.rand(1,32 * 32 * 3)
+            # print(sess.run(logits, feed_dict={features: x}))  
+            
+            # Another way to calculate the params
+            # params = np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
+            # print(params)        
+        
+        graph = load_pb(file_name)
+        # print('stats after freezing')
+        flops= stats_graph(graph,cmd='scope',is_flops=True)
+    
+        assert fixed_metrics['trainable_parameters'] == params == dataset[i]['trainable_parameters'] == n_params, 'Wrong calculated parames'
+        dataset[i]['flops'] = flops
+        assert len(dataset[i]) == arch_data_length
+        
+        del new_graph, graph, output_graph
+
+        # for debug
+        # if i == 10:
+        #     break
+        print('================================={}================================='.format(i))
+    
     return dataset 
 
 if __name__ == '__main__':
@@ -480,16 +484,16 @@ if __name__ == '__main__':
     config['num_modules_per_stack'] = 3
     config['num_labels'] = 10
 
-    save_file = '/home/ubuntu/workspace/nasbench/tmp_ouput/vertex_flops.json'
+    save_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_with_vertex_flops_and_params.json'
     if os.path.exists(save_file):
         os.remove(save_file)
     
-    data_path = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_423.json'
+    data_path = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.json'
     with open(data_path, 'r') as f:
         dataset = json.load(f)
     f.close()
-    # assert len(dataset) == 423624,"the length of the extracted json dataset is not 423624"
-    assert len(dataset) == 423,"the length of the extracted json dataset is not 423"
+    assert len(dataset) == 423624,"the length of the extracted json dataset is not 423624"
+    # assert len(dataset) == 423,"the length of the extracted json dataset is not 423" >>>>>>>debug use
     
     origin_dataset_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.tfrecord'
     nasbench = api.NASBench(dataset_file=origin_dataset_file)
@@ -500,11 +504,10 @@ if __name__ == '__main__':
     arch_data_length = 11
     dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length)
 
-    # assert len(dataset) == 423624
-    assert len(dataset) == 423
     with open(save_file, 'w') as r:
             json.dump(dataset, r)
     r.close()
+    assert len(dataset) == 423624, '刚才保存的数据长度不足423624，可能要重新算'
     
     s2 = time.time()
     print('all ok!!!!!!!!!!!!! using {} seconds'.format(s2-s1))
