@@ -16,9 +16,10 @@ import tensorflow as tf
 from nasbench.lib import base_ops
 from nasbench.lib import model_spec
 from nasbench import api
+
 # from tensorflow.python.framework import graph_util
 
-# os.environ["CUDA_VISIBLE_DEVICES"]='2'
+# tf.compat.v1.enable_eager_execution()
 
 INPUT = 'input'
 OUTPUT = 'output'
@@ -230,7 +231,87 @@ def load_pb(pb):
         tf.import_graph_def(graph_def, name='')
         return graph
 
-def build_model(spec, config, img_size=32, img_channel=3, is_training = False):
+def calculate_vertex_flops(spec, inputs, channels, is_training, stack_num, module_num, vertex_flops_file_path):
+    num_vertices = np.shape(spec.matrix)[0]
+    
+    if spec.data_format == 'channels_last':
+        channel_axis = 3
+    elif spec.data_format == 'channels_first':
+        channel_axis = 1
+    else:
+        raise ValueError('invalid data_format')
+    
+    input_channels = inputs.get_shape()[channel_axis].value
+    
+    vertex_channels = compute_vertex_channels(input_channels, channels,
+                                              spec.matrix)
+
+    # inputs_ = tf.ones(shape=inputs.shape.as_list(),type=inputs.dtype)
+    tensors = [tf.identity(inputs, name='input')]
+    
+    vertex_flops_dict = {}
+
+    # 这里开始构建每个节点算子和连接方式
+    for t in range(1, num_vertices - 1):
+        vertex_graph = tf.Graph()       # 构建每个vertex的子图
+        with vertex_graph.as_default():
+            with tf.compat.v1.variable_scope('vertex_{}'.format(t)):
+
+                # 这里tensors_要用tensors这个list的中的全部tensor生成一个新的不在已有图的list
+                tensors_ = [tf.compat.v1.placeholder(v.dtype, v.shape.as_list()) for v in tensors]
+                import pdb;pdb.set_trace()
+                
+                # tensors_ = tf.compat.v1.placeholder(tensors.dtype, tensors.shape.as_list(), name= 'features_in')
+                
+                # Create interior connections, truncating if necessary
+                add_in = [
+                    truncate(tensors_[src], vertex_channels[t], spec.data_format)
+                    for src in range(1, t) if spec.matrix[src, t]
+                ]
+
+                # Create add connection from projected input
+                if spec.matrix[0, t]:
+                    add_in.append(
+                        projection(tensors_[0], vertex_channels[t], is_training,
+                                spec.data_format))
+
+                if len(add_in) == 1:
+                    vertex_input = add_in[0]
+                else:
+                    vertex_input = tf.add_n(add_in)
+
+                # Perform op at vertex t
+                op = base_ops.OP_MAP[spec.ops[t]](is_training=is_training, data_format=spec.data_format)
+                vertex_value = op.build(vertex_input, vertex_channels[t])   # 算子的输出
+
+        # 图构建好，开始计算FLOPS
+        vertex_flops = 0
+        
+        with tf.Session(graph=vertex_graph) as sess:
+            sess.run(tf.compat.v1.global_variables_initializer())
+            
+            
+            output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, vertex_graph.as_graph_def(), [[n.name for n in tf.get_default_graph().as_graph_def().node][-2]]) # 遍历全部节点，找最后一个
+
+            file_name = vertex_flops_file_path                    # 后期要把死代码改掉
+            if os.path.exists(file_name):
+                os.remove(file_name)
+                
+            with tf.gfile.GFile(file_name, "wb") as q:
+                q.write(output_graph.SerializeToString())
+        
+        freezing_graph = load_pb(file_name)
+        vertex_flops = stats_graph(freezing_graph,cmd='scope',is_flops=True)
+        print('stack{}/module{}/vertex_{} flops is {}'.format(stack_num, module_num, t, vertex_flops))
+        
+        vertex_value_ = tf.ones(shape = vertex_value.shape.as_list(), type=vertex_value.dtype) # 仅仅是保存featuremap的size和通道数，用以计算FLOPS，与featuremap中的值无关,不直接append担心不同的图会出错，所以进保留了shape
+        tensors.append(vertex_value_)
+        
+        del vertex_graph, output_graph, freezing_graph
+
+    return vertex_flops
+
+def build_model(spec, config, img_size=32, img_channel=3, is_training = False, vertex_flops_file_path='tmp_output/vertex_graph.pb'):
 
     if config['data_format'] == 'channels_last':  # NHWC
         channel_axis = 3
@@ -275,6 +356,7 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False):
                                            inputs=net,
                                            channels=channels,
                                            is_training=is_training)
+                        vertex_flops = calculate_vertex_flops(spec, inputs=net,channels =channels,is_training=is_training, stack_num=stack_num, module_num=module_num,vertex_flops_file_path=vertex_flops_file_path)
 
         # Global average pool
         if config['data_format'] == 'channels_last':
@@ -317,7 +399,7 @@ def vertex_params(num_vertices, config):
     # print(cell_params_dict)
     return cell_params_dict
 
-def compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_length):
+def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path,arch_data_length):
     
     for i, subnet in enumerate(dataset):
             matrix=[]
@@ -333,7 +415,7 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_leng
             assert operator.eq(ops, fixed_metrics['module_operations']),'Wrong ops'
             
             spec = model_spec.ModelSpec(matrix, ops)
-            new_graph = build_model(spec, config, img_size=32, img_channel=3, is_training=False)
+            new_graph = build_model(spec, config, img_size=32, img_channel=3, is_training=False, vertex_flops_file_path=vertex_flops_file_path)
         
             # print('stats before freezing')
             params = stats_graph(new_graph, cmd = 'scope', is_flops=False)
@@ -344,7 +426,7 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_leng
                 num_vertices = np.shape(spec.matrix)[0]
                 vertex_params_dict = vertex_params(num_vertices, config)
                 assert len(vertex_params_dict) == config['num_stacks']*config['num_modules_per_stack'] , 'Wrong cell counts'
-                assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == num_vertices == len(vertex_params_dict[list(vertex_params_dict.keys())[-1]]), 'Wrong cell opts length'
+                assert len(vertex_params_dict[list(vertex_params_dict.keys())[0]]) == num_vertices == len(vertex_params_dict[list(vertex_params_dict.keys())[-2]]), 'Wrong cell opts length'
                 dataset[i]['vertex_params'] = vertex_params_dict
 
                 # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
@@ -380,7 +462,7 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_leng
     return dataset 
 
 def test(config):
-    
+   
     dataset = {
         'module_adjacency': [[0, 1, 0, 0, 1, 1, 0], [0, 0, 1, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 1], [0, 0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0]], 
       
@@ -397,59 +479,25 @@ def test(config):
 
     new_graph = build_model(spec, config, img_size=32, img_channel=3, is_training=False)
     new_graph.as_default()
+    
     # params = stats_graph(new_graph,cmd = 'graph',is_flops=False)
     # assert n_params == params
     
-    # import pdb;pdb.set_trace()
-    num_vertices = np.shape(spec.matrix)[0]
-   
-    
     with tf.Session(graph=new_graph) as sess:
         sess.run(tf.compat.v1.global_variables_initializer())
-        cell_params_dict = {}
-        
-        for stack_num in range(config['num_stacks']):
-            for module_num in range(config['num_modules_per_stack']):
-                
-                cell_params = [0]*num_vertices
-                
-                for t in range(1, num_vertices - 1):
-                    vertex_params = 0
-                    vertex_name ='stack{}/module{}/vertex_{}'.format(stack_num, module_num, t)
-                    
-                    if tf.compat.v1.trainable_variables(scope = vertex_name) == []:
-                        # print('{}_params : {}'.format(vertex_name,vertex_params))
-                        continue
-                    
-                    for trainable_variable in tf.compat.v1.trainable_variables(scope = vertex_name):
-                        
-                        ops_params = 1
-                        for dim in trainable_variable.shape:
-                            ops_params *= dim.value
-                        vertex_params += ops_params
-                    cell_params[t] = vertex_params
-                    # print('{}_params : {}'.format(vertex_name,vertex_params))                
-                
-                cell_params_dict['stack{}/module{}'.format(stack_num, module_num)] =  cell_params
-        
-        print(cell_params_dict)
-    
-    
-    
-    # with tf.Session(graph=new_graph) as sess:
-    #     sess.run(tf.compat.v1.global_variables_initializer())
             
-    #     print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
-    #     output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
+        # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
+        output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
 
-    #     file_name = 'tmp_output/graph_test.pb'
-    #     if os.path.exists(file_name):
-    #         os.remove(file_name)
+        file_name = 'tmp_output/graph_test.pb'
+        if os.path.exists(file_name):
+            os.remove(file_name)
                 
-    #     with tf.gfile.GFile(file_name, "wb") as q:
-    #         q.write(output_graph.SerializeToString())      
+        with tf.gfile.GFile(file_name, "wb") as q:
+            q.write(output_graph.SerializeToString())      
             
-    # graph = load_pb(file_name)
+    graph = load_pb(file_name)
+    
     # print('stats after freezing')
     # flops= stats_graph(new_graph,cmd='graph',is_flops=True)
     # print(params, flops)
@@ -466,7 +514,7 @@ if __name__ == '__main__':
 
     # test(config)
 
-    save_file = '/home/ubuntu/workspace/nasbench/tmp_ouput/423flops.json'
+    save_file = '/home/ubuntu/workspace/nasbench/tmp_ouput/vertex_flops.json'
     if os.path.exists(save_file):
         os.remove(save_file)
     
@@ -482,8 +530,9 @@ if __name__ == '__main__':
     assert len(nasbench.fixed_statistics) == len(nasbench.computed_statistics) == 423624, "Wrong length of the original dataset"
 
     pb_file_path = 'tmp_output/graph_test.pb'                       # 冻结时的图暂存
+    vertex_flops_file_path = 'tmp_output/vertex_graph.pb'           # 计算vertex flops时冻结的图暂存
     arch_data_length = 10
-    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, arch_data_length)
+    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length)
 
     # assert len(dataset) == 423624
     assert len(dataset) == 423
