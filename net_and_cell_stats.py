@@ -243,25 +243,22 @@ def calculate_vertex_flops(spec, inputs, channels, is_training, stack_num, modul
     
     input_channels = inputs.get_shape()[channel_axis].value
     
-    vertex_channels = compute_vertex_channels(input_channels, channels,
-                                              spec.matrix)
+    vertex_channels = compute_vertex_channels(input_channels, channels, spec.matrix)
 
-    # inputs_ = tf.ones(shape=inputs.shape.as_list(),type=inputs.dtype)
     tensors = [tf.identity(inputs, name='input')]
     
-    vertex_flops_dict = {}
+    vertex_flops_list = [0]*num_vertices        # 存储每个cell中所有vertex的flops为一个list
 
     # 这里开始构建每个节点算子和连接方式
     for t in range(1, num_vertices - 1):
+        
         vertex_graph = tf.Graph()       # 构建每个vertex的子图
         with vertex_graph.as_default():
             with tf.compat.v1.variable_scope('vertex_{}'.format(t)):
 
-                # 这里tensors_要用tensors这个list的中的全部tensor生成一个新的不在已有图的list
+                # tensors存储之前节点的所有输出，每个输出与原来的图相关联，因此仅提取输出的size做一个同样大小的placeholder以解除与原来的图的关联
+                # 存入tensors_list即可，计算FLOPS与输出真实value无关，与输出的size有关
                 tensors_ = [tf.compat.v1.placeholder(v.dtype, v.shape.as_list()) for v in tensors]
-                import pdb;pdb.set_trace()
-                
-                # tensors_ = tf.compat.v1.placeholder(tensors.dtype, tensors.shape.as_list(), name= 'features_in')
                 
                 # Create interior connections, truncating if necessary
                 add_in = [
@@ -282,18 +279,19 @@ def calculate_vertex_flops(spec, inputs, channels, is_training, stack_num, modul
 
                 # Perform op at vertex t
                 op = base_ops.OP_MAP[spec.ops[t]](is_training=is_training, data_format=spec.data_format)
-                vertex_value = op.build(vertex_input, vertex_channels[t])   # 算子的输出
+                vertex_value = op.build(vertex_input, vertex_channels[t])   # 算子的输出, 这里的vertex_value属于当前这个图
 
+        tensors.append(vertex_value)        # 存储vertex输出的feature
+        
         # 图构建好，开始计算FLOPS
         vertex_flops = 0
         
         with tf.Session(graph=vertex_graph) as sess:
             sess.run(tf.compat.v1.global_variables_initializer())
             
-            
-            output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, vertex_graph.as_graph_def(), [[n.name for n in tf.get_default_graph().as_graph_def().node][-2]]) # 遍历全部节点，找最后一个
+            output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, vertex_graph.as_graph_def(), [[n.name for n in tf.get_default_graph().as_graph_def().node][-2]]) # 遍历全部节点，找倒数2个，最后一个是'init'
 
-            file_name = vertex_flops_file_path                    # 后期要把死代码改掉
+            file_name = vertex_flops_file_path
             if os.path.exists(file_name):
                 os.remove(file_name)
                 
@@ -301,15 +299,17 @@ def calculate_vertex_flops(spec, inputs, channels, is_training, stack_num, modul
                 q.write(output_graph.SerializeToString())
         
         freezing_graph = load_pb(file_name)
+
         vertex_flops = stats_graph(freezing_graph,cmd='scope',is_flops=True)
         print('stack{}/module{}/vertex_{} flops is {}'.format(stack_num, module_num, t, vertex_flops))
-        
-        vertex_value_ = tf.ones(shape = vertex_value.shape.as_list(), type=vertex_value.dtype) # 仅仅是保存featuremap的size和通道数，用以计算FLOPS，与featuremap中的值无关,不直接append担心不同的图会出错，所以进保留了shape
-        tensors.append(vertex_value_)
+        vertex_flops_list[t] = vertex_flops
         
         del vertex_graph, output_graph, freezing_graph
 
-    return vertex_flops
+    assert len(vertex_flops_list) == num_vertices, 'Wrong length of vertex_flops_list'
+    assert vertex_flops_list[0] == 0 == vertex_flops_list[-1], 'input and output flops should be zero'
+    
+    return vertex_flops_list
 
 def build_model(spec, config, img_size=32, img_channel=3, is_training = False, vertex_flops_file_path='tmp_output/vertex_graph.pb'):
 
@@ -322,6 +322,8 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False, v
         raise ValueError('invalid data_format')
 
     assert spec.data_format == config['data_format'],'Wrong ModelSpec data_format'
+
+    vertex_flops_dict = {}                          # 存储每个cell的vertex flops list
 
     new_graph = tf.Graph()
     with new_graph.as_default():
@@ -356,7 +358,10 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False, v
                                            inputs=net,
                                            channels=channels,
                                            is_training=is_training)
-                        vertex_flops = calculate_vertex_flops(spec, inputs=net,channels =channels,is_training=is_training, stack_num=stack_num, module_num=module_num,vertex_flops_file_path=vertex_flops_file_path)
+                        
+                        # 计算t个cell中每个节点的flops
+                        vertex_flops_list = calculate_vertex_flops(spec, inputs=net,channels =channels,is_training=is_training, stack_num=stack_num, module_num=module_num,vertex_flops_file_path=vertex_flops_file_path)
+                        vertex_flops_dict['stack{}/module{}'.format(stack_num, module_num)] = vertex_flops_list
 
         # Global average pool
         if config['data_format'] == 'channels_last':
@@ -369,7 +374,8 @@ def build_model(spec, config, img_size=32, img_channel=3, is_training = False, v
         # Fully-connected layer to labels
         logits = tf.layers.dense(inputs=net, units=config['num_labels'])
 
-    return new_graph
+    assert len(vertex_flops_dict) == config['num_stacks']*config['num_modules_per_stack']
+    return new_graph, vertex_flops_dict
 
 def vertex_params(num_vertices, config):
     cell_params_dict = {}
@@ -415,8 +421,11 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_f
             assert operator.eq(ops, fixed_metrics['module_operations']),'Wrong ops'
             
             spec = model_spec.ModelSpec(matrix, ops)
-            new_graph = build_model(spec, config, img_size=32, img_channel=3, is_training=False, vertex_flops_file_path=vertex_flops_file_path)
-        
+            
+            new_graph, vertex_flops_dict= build_model(spec, config, img_size=32, img_channel=3, is_training=False, vertex_flops_file_path=vertex_flops_file_path)
+            
+            dataset[i]['vertex_flops'] = vertex_flops_dict
+
             # print('stats before freezing')
             params = stats_graph(new_graph, cmd = 'scope', is_flops=False)
         
@@ -461,47 +470,6 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_f
 
     return dataset 
 
-def test(config):
-   
-    dataset = {
-        'module_adjacency': [[0, 1, 0, 0, 1, 1, 0], [0, 0, 1, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 1], [0, 0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0]], 
-      
-        'module_operations': ['input', 'conv3x3-bn-relu', 'maxpool3x3', 'conv3x3-bn-relu', 'conv3x3-bn-relu', 'conv1x1-bn-relu', 'output'], 
-      
-        'trainable_parameters': 8555530
-    }
-
-    matrix = dataset['module_adjacency']
-    ops = dataset['module_operations']
-    n_params = dataset['trainable_parameters']
-
-    spec = model_spec.ModelSpec(matrix, ops)
-
-    new_graph = build_model(spec, config, img_size=32, img_channel=3, is_training=False)
-    new_graph.as_default()
-    
-    # params = stats_graph(new_graph,cmd = 'graph',is_flops=False)
-    # assert n_params == params
-    
-    with tf.Session(graph=new_graph) as sess:
-        sess.run(tf.compat.v1.global_variables_initializer())
-            
-        # print([n.name for n in tf.get_default_graph().as_graph_def().node])   # find last node in the graph
-        output_graph = tf.compat.v1.graph_util.convert_variables_to_constants(sess, new_graph.as_graph_def(),['dense/BiasAdd']) # freezing parameters
-
-        file_name = 'tmp_output/graph_test.pb'
-        if os.path.exists(file_name):
-            os.remove(file_name)
-                
-        with tf.gfile.GFile(file_name, "wb") as q:
-            q.write(output_graph.SerializeToString())      
-            
-    graph = load_pb(file_name)
-    
-    # print('stats after freezing')
-    # flops= stats_graph(new_graph,cmd='graph',is_flops=True)
-    # print(params, flops)
-
 if __name__ == '__main__':
     s1 = time.time()
 
@@ -511,8 +479,6 @@ if __name__ == '__main__':
     config['num_stacks'] = 3
     config['num_modules_per_stack'] = 3
     config['num_labels'] = 10
-
-    # test(config)
 
     save_file = '/home/ubuntu/workspace/nasbench/tmp_ouput/vertex_flops.json'
     if os.path.exists(save_file):
@@ -531,7 +497,7 @@ if __name__ == '__main__':
 
     pb_file_path = 'tmp_output/graph_test.pb'                       # 冻结时的图暂存
     vertex_flops_file_path = 'tmp_output/vertex_graph.pb'           # 计算vertex flops时冻结的图暂存
-    arch_data_length = 10
+    arch_data_length = 11
     dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length)
 
     # assert len(dataset) == 423624
