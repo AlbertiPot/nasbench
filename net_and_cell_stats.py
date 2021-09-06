@@ -414,7 +414,7 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_f
 
         matrix = subnet['module_adjacency']
         ops = subnet['module_operations']
-        n_params = subnet['trainable_parameters']
+        # n_params = subnet['trainable_parameters']
         unique_hash = subnet['unique_hash']
         
         fixed_metrics, _ = nasbench.get_metrics_from_hash(unique_hash)
@@ -428,7 +428,7 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_f
         dataset[i]['vertex_flops'] = vertex_flops_dict
 
         # print('stats before freezing')
-        params = stats_graph(new_graph, cmd = 'scope', is_flops=False)
+        # params = stats_graph(new_graph, cmd = 'scope', is_flops=False)
     
         with tf.Session(graph=new_graph,config=tf.ConfigProto(intra_op_parallelism_threads=15, inter_op_parallelism_threads=15)) as sess:
             sess.run(tf.compat.v1.global_variables_initializer())
@@ -461,16 +461,17 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_f
         # print('stats after freezing')
         flops= stats_graph(graph,cmd='scope',is_flops=True)
     
-        assert fixed_metrics['trainable_parameters'] == params == dataset[i]['trainable_parameters'] == n_params, 'Wrong calculated parames'
+        # assert fixed_metrics['trainable_parameters'] == params == dataset[i]['trainable_parameters'] == n_params, 'Wrong calculated parames'
         dataset[i]['flops'] = flops
         assert len(dataset[i]) == arch_data_length
         
         del new_graph, graph, output_graph
 
+        print('================================={}================================='.format(i))
+        
         # for debug
         # if i == 10:
         #     break
-        print('================================={}================================='.format(i))
     
     return dataset 
 
