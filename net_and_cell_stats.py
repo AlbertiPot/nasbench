@@ -406,7 +406,7 @@ def vertex_params(num_vertices, config):
     # print(cell_params_dict)
     return cell_params_dict
 
-def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length):
+def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length, extract_length=None):
     
     for i, subnet in enumerate(dataset):
         matrix=[]
@@ -469,9 +469,10 @@ def compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_f
 
         print('================================={}================================='.format(i))
         
-        # for debug
-        # if i == 10:
-        #     break
+        # for shot dataset
+        if extract_length is not None:
+            if i == extract_length-1:
+                break
     
     return dataset 
 
@@ -485,30 +486,50 @@ if __name__ == '__main__':
     config['num_modules_per_stack'] = 3
     config['num_labels'] = 10
 
-    save_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108_with_vertex_flops_and_params.json'
+    save_file = '/home/gbc/workspace/nasbench/data/nasbench_only108_with_vertex_flops_and_params_42362.json'
     if os.path.exists(save_file):
         os.remove(save_file)
     
-    data_path = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.json'
+    data_path = '/home/gbc/workspace/nasbench/data/nasbench_only108.json'
     with open(data_path, 'r') as f:
         dataset = json.load(f)
     f.close()
     assert len(dataset) == 423624,"the length of the extracted json dataset is not 423624"
     # assert len(dataset) == 423,"the length of the extracted json dataset is not 423" >>>>>>>debug use
     
-    origin_dataset_file = '/home/ubuntu/workspace/nasbench/data/nasbench_only108.tfrecord'
+    origin_dataset_file = '/home/gbc/workspace/nasbench/data/nasbench_only108.tfrecord'
     nasbench = api.NASBench(dataset_file=origin_dataset_file)
     assert len(nasbench.fixed_statistics) == len(nasbench.computed_statistics) == 423624, "Wrong length of the original dataset"
 
     pb_file_path = 'tmp_output/graph_test.pb'                       # 冻结时的图暂存
     vertex_flops_file_path = 'tmp_output/vertex_graph.pb'           # 计算vertex flops时冻结的图暂存
     arch_data_length = 11
-    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length)
+
+    # shuffle，生成一组乱序的keys
+    seed = 202109221022
+    import torch
+    g = torch.Generator()
+    g.manual_seed(seed)
+    key_list = torch.randperm(len(dataset), generator = g).tolist()
+    dataset = [dataset[i] for i in key_list]
+
+    
+    extract_length = 42362
+    
+    dataset = compute_params_flops(dataset, nasbench, config, pb_file_path, vertex_flops_file_path, arch_data_length, extract_length)
+    
+    
+    if extract_length is not None:
+        dataset = dataset[:extract_length]                                 # 只提取前42362个
 
     with open(save_file, 'w') as r:
             json.dump(dataset, r)
     r.close()
-    assert len(dataset) == 423624, '刚才保存的数据长度不足423624，可能要重新算'
+    
+    if extract_length is None:
+        assert len(dataset) == 423624, '刚才保存的数据长度不足423624，可能要重新算'
+    else:
+        assert len(dataset) == extract_length, '刚才保存的数据长度不足{}，可能要重新算'.format(extract_length)
     
     s2 = time.time()
     print('all ok!!!!!!!!!!!!! using {} seconds'.format(s2-s1))
